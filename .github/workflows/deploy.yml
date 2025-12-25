@@ -1,0 +1,204 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+      - 'src/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+env:
+  PYTHON_VERSION: "3.11"
+  TERRAFORM_VERSION: "1.5.7"
+  AWS_REGION: "us-east-1"
+
+jobs:
+  build:
+    name: Build Lambda Packages
+    runs-on: ubuntu-latest
+    outputs:
+      lambda-hash: ${{ steps.build.outputs.hash }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Build Lambda package
+        id: build
+        run: |
+          mkdir -p dist
+          pip install -r requirements.txt -t dist/lambda_package/
+          cp -r src/* dist/lambda_package/
+          cd dist/lambda_package && zip -r ../lambda-deployment.zip .
+
+          # Calculate hash for cache key
+          HASH=$(sha256sum dist/lambda-deployment.zip | cut -d' ' -f1)
+          echo "hash=${HASH:0:8}" >> $GITHUB_OUTPUT
+
+      - name: Build Lambda layer
+        run: |
+          mkdir -p dist/layer/python
+          pip install \
+            aws-lambda-powertools \
+            pydantic \
+            pydantic-settings \
+            boto3 \
+            -t dist/layer/python/
+          cd dist/layer && zip -r ../lambda-layer.zip python/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-packages
+          path: |
+            dist/lambda-deployment.zip
+            dist/lambda-layer.zip
+
+  deploy-dev:
+    name: Deploy to Dev
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' || github.event.inputs.environment == 'dev'
+    environment: dev
+    concurrency:
+      group: deploy-dev
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-packages
+          path: dist/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform Init
+        working-directory: terraform/environments/dev
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: terraform/environments/dev
+        run: terraform plan -out=tfplan
+        env:
+          TF_VAR_lambda_zip_path: "../../../dist/lambda-deployment.zip"
+          TF_VAR_layer_zip_path: "../../../dist/lambda-layer.zip"
+
+      - name: Terraform Apply
+        working-directory: terraform/environments/dev
+        run: terraform apply -auto-approve tfplan
+
+  deploy-staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: [build, deploy-dev]
+    if: github.event.inputs.environment == 'staging'
+    environment: staging
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-packages
+          path: dist/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform Init
+        working-directory: terraform/environments/staging
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: terraform/environments/staging
+        run: terraform plan -out=tfplan
+        env:
+          TF_VAR_lambda_zip_path: "../../../dist/lambda-deployment.zip"
+          TF_VAR_layer_zip_path: "../../../dist/lambda-layer.zip"
+
+      - name: Terraform Apply
+        working-directory: terraform/environments/staging
+        run: terraform apply -auto-approve tfplan
+
+  deploy-prod:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: [build, deploy-staging]
+    if: github.event.inputs.environment == 'prod'
+    environment: production
+    concurrency:
+      group: deploy-prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: deployment-packages
+          path: dist/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Terraform Init
+        working-directory: terraform/environments/prod
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: terraform/environments/prod
+        run: terraform plan -out=tfplan
+        env:
+          TF_VAR_lambda_zip_path: "../../../dist/lambda-deployment.zip"
+          TF_VAR_layer_zip_path: "../../../dist/lambda-layer.zip"
+
+      - name: Terraform Apply
+        working-directory: terraform/environments/prod
+        run: terraform apply -auto-approve tfplan
