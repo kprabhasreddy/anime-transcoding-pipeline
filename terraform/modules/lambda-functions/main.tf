@@ -137,18 +137,30 @@ resource "aws_iam_role_policy" "lambda_mediaconvert" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid    = "MediaConvertEndpoints"
         Effect = "Allow"
         Action = [
-          "mediaconvert:CreateJob",
-          "mediaconvert:GetJob",
-          "mediaconvert:ListJobs",
           "mediaconvert:DescribeEndpoints"
         ]
         Resource = "*"
       },
       {
+        Sid    = "MediaConvertJobOperations"
         Effect = "Allow"
-        Action = "iam:PassRole"
+        Action = [
+          "mediaconvert:CreateJob",
+          "mediaconvert:GetJob",
+          "mediaconvert:ListJobs"
+        ]
+        Resource = [
+          "arn:aws:mediaconvert:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:queues/${var.project_name}-*",
+          "arn:aws:mediaconvert:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:jobs/*"
+        ]
+      },
+      {
+        Sid      = "PassRoleToMediaConvert"
+        Effect   = "Allow"
+        Action   = "iam:PassRole"
         Resource = var.mediaconvert_role_arn
         Condition = {
           StringEquals = {

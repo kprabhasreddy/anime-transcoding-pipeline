@@ -351,8 +351,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - AWS MediaConvert documentation and best practices
 - [AWS Lambda Powertools](https://docs.powertools.aws.dev/lambda/python/) for observability
 - LocalStack for enabling free local development
-- The anime streaming community for inspiration
-
 ---
-
-**Built with ❤️ for anime fans and video engineers**

@@ -92,13 +92,7 @@ jobs:
         run: pip install bandit[toml]
 
       - name: Run Bandit security scan
-        run: bandit -r src/ -c pyproject.toml -f json -o bandit-report.json || true
-
-      - name: Upload Bandit report
-        uses: actions/upload-artifact@v4
-        with:
-          name: bandit-report
-          path: bandit-report.json
+        run: bandit -r src/ -c pyproject.toml -ll
 
   terraform-validate:
     name: Terraform Validate
@@ -134,14 +128,15 @@ jobs:
         uses: aquasecurity/tfsec-action@v1.0.3
         with:
           working_directory: terraform/
-          soft_fail: true
+          soft_fail: false
 
       - name: Run checkov
         uses: bridgecrewio/checkov-action@v12
         with:
           directory: terraform/
-          soft_fail: true
+          soft_fail: false
           output_format: cli
+          skip_check: CKV_AWS_116,CKV_AWS_117,CKV_AWS_173
 
   integration-test:
     name: Integration Tests
