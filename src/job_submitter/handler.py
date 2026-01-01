@@ -1,33 +1,38 @@
-"""Lambda handler for submitting MediaConvert jobs.
+"""Lambda handler for building MediaConvert job configuration.
 
 This Lambda is called by Step Functions after input validation passes.
-It builds and submits the MediaConvert job, handling idempotency to
-prevent duplicate transcoding.
+It builds the MediaConvert job configuration and returns it for Step Functions
+to submit directly using the .sync integration pattern.
+
+Architecture note (v1.1):
+    The Lambda no longer submits jobs directly. Instead, it returns the complete
+    job configuration, and Step Functions uses mediaconvert:createJob.sync to
+    submit the job and wait for completion. This provides:
+    - Cleaner separation of concerns
+    - Native Step Functions retry/error handling for MediaConvert
+    - Simplified Lambda code (no API calls, just configuration)
 
 Flow:
-1. Generate idempotency token
-2. Check for existing job
+1. Generate idempotency token (includes profile version)
+2. Check for existing job (skip if already processed, unless force_reprocess)
 3. Build MediaConvert job settings
-4. Submit job
-5. Store job reference for tracking
+4. Reserve slot in DynamoDB (prevents race conditions)
+5. Return settings for Step Functions to submit
 """
 
-import json
 from typing import Any
 
 from aws_lambda_powertools import Logger, Metrics, Tracer
 from aws_lambda_powertools.metrics import MetricUnit
 from aws_lambda_powertools.utilities.typing import LambdaContext
 
-from ..shared.aws_clients import get_mediaconvert_client
 from ..shared.config import get_settings
-from ..shared.exceptions import JobSubmissionError
 from ..shared.models import TranscodeJobRequest, TranscodeManifest
 from .abr_ladder import get_abr_ladder
 from .idempotency import (
     check_idempotency,
     generate_idempotency_token,
-    store_job_reference,
+    reserve_job_slot,
 )
 from .job_builder import build_mediaconvert_job
 
@@ -35,35 +40,45 @@ logger = Logger(service="job-submitter")
 tracer = Tracer(service="job-submitter")
 metrics = Metrics(service="job-submitter", namespace="AnimeTranscoding")
 
+# Current transcode profile version - increment when encoding settings change
+# This is included in idempotency token to allow re-processing with new settings
+TRANSCODE_PROFILE_VERSION = "v1.0"
+
 
 @logger.inject_lambda_context(log_event=True)
 @tracer.capture_lambda_handler
 @metrics.log_metrics(capture_cold_start_metric=True)
 def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
-    """Submit MediaConvert job for transcoding.
+    """Build MediaConvert job configuration for transcoding.
 
     Args:
         event: Step Functions input containing manifest and validation results
         context: Lambda context
 
     Returns:
-        Job submission result for Step Functions
+        Job configuration for Step Functions to submit to MediaConvert
 
     Input event structure:
         {
             "manifest": {...},
             "input_s3_uri": "s3://bucket/path/to/mezzanine.mxf",
             "output_s3_prefix": "s3://bucket/output/path",
-            "validation_result": {...}
+            "validation_result": {...},
+            "force_reprocess": false  # Optional: bypass idempotency check
         }
 
     Output structure:
         {
-            "job_id": "1234567890123-abc123",
-            "status": "SUBMITTED",
-            "output_prefix": "s3://...",
-            "variants": [...],
-            "idempotent": false
+            "job_settings": {...},           # MediaConvert job settings
+            "job_metadata": {                # Metadata for tracking
+                "manifest_id": "...",
+                "idempotency_token": "...",
+                "variants": [...]
+            },
+            "mediaconvert_role_arn": "...",  # Role for MediaConvert
+            "mediaconvert_queue_arn": "...", # Queue to submit to
+            "skip_transcode": false,         # True if idempotent skip
+            "mock_mode": false               # True if in mock mode
         }
     """
     settings = get_settings()
@@ -72,45 +87,57 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     manifest = TranscodeManifest(**event["manifest"])
     input_s3_uri = event["input_s3_uri"]
     output_s3_prefix = event["output_s3_prefix"]
+    force_reprocess = event.get("force_reprocess", False)
 
     logger.info(
-        "Starting job submission",
+        "Building job configuration",
         extra={
             "manifest_id": manifest.manifest_id,
             "series_id": manifest.episode.series_id,
             "episode": manifest.episode.episode_code,
             "input_s3_uri": input_s3_uri,
+            "force_reprocess": force_reprocess,
         },
     )
 
-    # Generate idempotency token
-    idempotency_token = generate_idempotency_token(manifest)
+    # Generate idempotency token (includes profile version for re-encoding support)
+    idempotency_token = generate_idempotency_token(
+        manifest=manifest,
+        profile_version=TRANSCODE_PROFILE_VERSION,
+    )
 
-    # Check for existing job (idempotency)
-    with tracer.capture_method("check_idempotency"):
-        existing_job = check_idempotency(idempotency_token)
+    # Check for existing job (idempotency) unless force_reprocess is set
+    if not force_reprocess:
+        with tracer.capture_method("check_idempotency"):
+            existing_job = check_idempotency(idempotency_token)
 
-    if existing_job:
-        logger.info(
-            "Returning existing job (idempotent)",
-            extra={
-                "job_id": existing_job.get("job_id"),
-                "manifest_id": manifest.manifest_id,
-                "status": existing_job.get("status"),
-            },
-        )
-        metrics.add_metric(
-            name="IdempotentJobSkipped",
-            unit=MetricUnit.Count,
-            value=1,
-        )
-        return {
-            "job_id": existing_job.get("job_id"),
-            "manifest_id": manifest.manifest_id,
-            "status": "ALREADY_SUBMITTED",
-            "idempotent": True,
-            "original_status": existing_job.get("status"),
-        }
+        if existing_job and existing_job.get("status") in ("COMPLETE", "SUBMITTED", "PROGRESSING"):
+            logger.info(
+                "Returning existing job (idempotent)",
+                extra={
+                    "job_id": existing_job.get("job_id"),
+                    "manifest_id": manifest.manifest_id,
+                    "status": existing_job.get("status"),
+                },
+            )
+            metrics.add_metric(
+                name="IdempotentJobSkipped",
+                unit=MetricUnit.Count,
+                value=1,
+            )
+            return {
+                "skip_transcode": True,
+                "idempotent": True,
+                "existing_job": {
+                    "job_id": existing_job.get("job_id"),
+                    "status": existing_job.get("status"),
+                    "output_prefix": existing_job.get("output_prefix"),
+                },
+                "job_metadata": {
+                    "manifest_id": manifest.manifest_id,
+                    "idempotency_token": idempotency_token,
+                },
+            }
 
     # Build ABR ladder based on source resolution
     with tracer.capture_method("build_abr_ladder"):
@@ -131,6 +158,9 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
         },
     )
 
+    # Map priority to queue tier
+    queue_arn = _get_queue_for_priority(manifest.priority, settings)
+
     # Build job request
     job_request = TranscodeJobRequest(
         manifest=manifest,
@@ -146,157 +176,110 @@ def handler(event: dict[str, Any], context: LambdaContext) -> dict[str, Any]:
     with tracer.capture_method("build_job_settings"):
         job_settings = build_mediaconvert_job(job_request)
 
+    # Reserve slot in idempotency table (prevents race conditions)
+    with tracer.capture_method("reserve_job_slot"):
+        reservation = reserve_job_slot(
+            idempotency_token=idempotency_token,
+            manifest_id=manifest.manifest_id,
+            output_prefix=output_s3_prefix,
+        )
+
+    if not reservation["reserved"]:
+        # Another process already reserved this slot
+        logger.info(
+            "Job slot already reserved by another process",
+            extra={"manifest_id": manifest.manifest_id},
+        )
+        return {
+            "skip_transcode": True,
+            "idempotent": True,
+            "existing_job": reservation.get("existing_job"),
+            "job_metadata": {
+                "manifest_id": manifest.manifest_id,
+                "idempotency_token": idempotency_token,
+            },
+        }
+
+    # Emit metrics
+    metrics.add_metric(name="JobsConfigured", unit=MetricUnit.Count, value=1)
+    metrics.add_metadata(key="manifest_id", value=manifest.manifest_id)
+
     # Check if in mock mode
     if settings.mock_mode:
         logger.info(
-            "Mock mode - simulating job submission",
+            "Mock mode - returning mock job configuration",
             extra={"manifest_id": manifest.manifest_id},
         )
-        mock_job_id = f"mock-{manifest.manifest_id}-{idempotency_token[:8]}"
-
-        # Store mock job reference
-        store_job_reference(
-            idempotency_token=idempotency_token,
-            job_id=mock_job_id,
-            manifest_id=manifest.manifest_id,
-            status="MOCK_SUBMITTED",
-        )
-
         return {
-            "job_id": mock_job_id,
-            "manifest_id": manifest.manifest_id,
-            "status": "MOCK_SUBMITTED",
-            "output_prefix": output_s3_prefix,
-            "variants": [v.model_dump() for v in abr_variants],
-            "idempotent": False,
+            "skip_transcode": False,
             "mock_mode": True,
+            "job_settings": job_settings,
+            "job_metadata": {
+                "manifest_id": manifest.manifest_id,
+                "idempotency_token": idempotency_token,
+                "output_prefix": output_s3_prefix,
+                "variants": [v.model_dump() for v in abr_variants],
+                "profile_version": TRANSCODE_PROFILE_VERSION,
+            },
+            "mediaconvert_role_arn": settings.mediaconvert_role_arn,
+            "mediaconvert_queue_arn": queue_arn,
         }
 
-    # Submit to MediaConvert
-    with tracer.capture_method("submit_job"):
-        result = _submit_mediaconvert_job(
-            job_settings=job_settings,
-            manifest=manifest,
-            idempotency_token=idempotency_token,
-            settings=settings,
-        )
-
-    # Store job reference for tracking
-    store_job_reference(
-        idempotency_token=idempotency_token,
-        job_id=result["job_id"],
-        manifest_id=manifest.manifest_id,
-        status="SUBMITTED",
-    )
-
-    # Emit metrics
-    metrics.add_metric(name="JobsSubmitted", unit=MetricUnit.Count, value=1)
-    metrics.add_metadata(key="manifest_id", value=manifest.manifest_id)
-    metrics.add_metadata(key="job_id", value=result["job_id"])
-
     logger.info(
-        "Job submitted successfully",
+        "Job configuration built successfully",
         extra={
-            "job_id": result["job_id"],
             "manifest_id": manifest.manifest_id,
             "output_prefix": output_s3_prefix,
+            "queue_arn": queue_arn,
         },
     )
 
     return {
-        "job_id": result["job_id"],
-        "manifest_id": manifest.manifest_id,
-        "status": "SUBMITTED",
-        "output_prefix": output_s3_prefix,
-        "variants": [v.model_dump() for v in abr_variants],
-        "idempotent": False,
+        "skip_transcode": False,
+        "mock_mode": False,
+        "job_settings": job_settings,
+        "job_metadata": {
+            "manifest_id": manifest.manifest_id,
+            "idempotency_token": idempotency_token,
+            "output_prefix": output_s3_prefix,
+            "variants": [v.model_dump() for v in abr_variants],
+            "profile_version": TRANSCODE_PROFILE_VERSION,
+        },
+        "mediaconvert_role_arn": settings.mediaconvert_role_arn,
+        "mediaconvert_queue_arn": queue_arn,
+        "user_metadata": {
+            "manifest_id": manifest.manifest_id,
+            "series_id": manifest.episode.series_id,
+            "episode": manifest.episode.episode_code,
+            "idempotency_token": idempotency_token[:32],
+        },
+        "tags": {
+            "Environment": settings.environment,
+            "Pipeline": "anime-transcoding",
+            "SeriesId": manifest.episode.series_id,
+            "ManifestId": manifest.manifest_id,
+        },
     }
 
 
-@tracer.capture_method
-def _submit_mediaconvert_job(
-    job_settings: dict[str, Any],
-    manifest: TranscodeManifest,
-    idempotency_token: str,
-    settings: Any,
-) -> dict[str, Any]:
-    """Submit job to MediaConvert API.
+def _get_queue_for_priority(priority: int, settings: Any) -> str:
+    """Map manifest priority to MediaConvert queue.
+
+    Priority levels:
+    - 0-3: Standard queue (default)
+    - 4-7: High priority queue (future)
+    - 8-10: Reserved/on-demand queue (future)
 
     Args:
-        job_settings: Built job settings from job_builder
-        manifest: TranscodeManifest
-        idempotency_token: Idempotency token for deduplication
+        priority: Manifest priority (0-10)
         settings: Application settings
 
     Returns:
-        Dictionary with job_id and status
-
-    Raises:
-        JobSubmissionError: If API call fails
+        MediaConvert queue ARN
     """
-    mediaconvert = get_mediaconvert_client()
-
-    try:
-        response = mediaconvert.create_job(
-            Role=settings.mediaconvert_role_arn,
-            Settings=job_settings,
-            Queue=settings.mediaconvert_queue_arn,
-            UserMetadata={
-                "manifest_id": manifest.manifest_id,
-                "series_id": manifest.episode.series_id,
-                "episode": manifest.episode.episode_code,
-                "idempotency_token": idempotency_token[:32],
-            },
-            Tags={
-                "Environment": settings.environment,
-                "Pipeline": "anime-transcoding",
-                "SeriesId": manifest.episode.series_id,
-            },
-            ClientRequestToken=idempotency_token,
-        )
-
-        job_id = response["Job"]["Id"]
-        job_status = response["Job"]["Status"]
-
-        return {
-            "job_id": job_id,
-            "status": job_status,
-            "arn": response["Job"]["Arn"],
-        }
-
-    except mediaconvert.exceptions.ConflictException:
-        # Job already exists with same idempotency token
-        # This is actually OK - return the existing job
-        logger.info(
-            "Job already exists (MediaConvert conflict)",
-            extra={"idempotency_token": idempotency_token[:16] + "..."},
-        )
-
-        # Try to find the existing job
-        existing = check_idempotency(idempotency_token)
-        if existing and existing.get("job_id"):
-            return {
-                "job_id": existing["job_id"],
-                "status": "ALREADY_EXISTS",
-            }
-
-        raise JobSubmissionError(
-            "Job already exists but couldn't retrieve ID",
-            {"idempotency_token": idempotency_token[:16]},
-        )
-
-    except Exception as e:
-        logger.exception("MediaConvert API error")
-        metrics.add_metric(
-            name="JobSubmissionErrors",
-            unit=MetricUnit.Count,
-            value=1,
-        )
-        raise JobSubmissionError(
-            f"Failed to submit MediaConvert job: {e}",
-            {
-                "manifest_id": manifest.manifest_id,
-                "error": str(e),
-                "error_type": type(e).__name__,
-            },
-        )
+    # For v1, use single queue. Multi-queue support planned for v2.
+    # if priority >= 8 and hasattr(settings, 'mediaconvert_reserved_queue_arn'):
+    #     return settings.mediaconvert_reserved_queue_arn
+    # elif priority >= 4 and hasattr(settings, 'mediaconvert_high_priority_queue_arn'):
+    #     return settings.mediaconvert_high_priority_queue_arn
+    return settings.mediaconvert_queue_arn

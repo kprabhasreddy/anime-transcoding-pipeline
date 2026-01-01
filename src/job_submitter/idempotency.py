@@ -5,14 +5,21 @@ multiple times (e.g., due to S3 event retries or user error).
 
 Uses DynamoDB for atomic conditional writes to ensure exactly-once
 semantics in distributed Lambda environments.
+
+Features:
+- Profile versioning: Include encoding profile version in token to allow
+  re-encoding when settings change
+- Force reprocess: Optional bypass for intentional re-transcoding
+- Slot reservation: Two-phase commit to prevent race conditions
 """
 
 import hashlib
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from aws_lambda_powertools import Logger
+from botocore.exceptions import ClientError
 
 from ..shared.aws_clients import get_dynamodb_resource
 from ..shared.config import get_settings
@@ -25,7 +32,10 @@ logger = Logger(service="idempotency")
 IDEMPOTENCY_TTL_DAYS = 7
 
 
-def generate_idempotency_token(manifest: TranscodeManifest) -> str:
+def generate_idempotency_token(
+    manifest: TranscodeManifest,
+    profile_version: str = "v1.0",
+) -> str:
     """Generate deterministic idempotency token from manifest.
 
     The token is based on immutable content identifiers to ensure
@@ -36,9 +46,13 @@ def generate_idempotency_token(manifest: TranscodeManifest) -> str:
     - checksum_md5: Content integrity hash
     - file_size_bytes: Additional integrity check
     - audio track languages: Ensures same audio configuration
+    - profile_version: Encoding profile version (allows re-encoding with new settings)
 
     Args:
         manifest: TranscodeManifest object
+        profile_version: Current transcode profile version (e.g., "v1.0")
+            Increment this when encoding settings change to allow re-processing
+            of previously transcoded content with new settings.
 
     Returns:
         64-character hex string (SHA-256 hash)
@@ -48,6 +62,7 @@ def generate_idempotency_token(manifest: TranscodeManifest) -> str:
         manifest.mezzanine.checksum_md5,
         str(manifest.mezzanine.file_size_bytes),
         str(sorted([t.language.value for t in manifest.audio_tracks])),
+        profile_version,  # Added: allows re-encoding when profile changes
     ]
 
     combined = "|".join(key_components)
@@ -102,28 +117,28 @@ def check_idempotency(idempotency_token: str) -> dict[str, Any] | None:
         return None
 
 
-def store_job_reference(
+def reserve_job_slot(
     idempotency_token: str,
-    job_id: str,
     manifest_id: str,
-    status: str = "SUBMITTED",
-) -> bool:
-    """Store job reference for idempotency tracking.
+    output_prefix: str,
+) -> dict[str, Any]:
+    """Reserve a slot for job submission using conditional write.
 
-    Uses conditional write to prevent race conditions when multiple
-    Lambda invocations try to submit the same job.
+    This implements the first phase of a two-phase commit pattern:
+    1. Reserve slot with PENDING status (this function)
+    2. Update to SUBMITTED after MediaConvert accepts the job
+
+    Uses conditional write to ensure only one Lambda wins the race.
 
     Args:
         idempotency_token: Token from generate_idempotency_token
-        job_id: MediaConvert job ID
         manifest_id: Manifest identifier
-        status: Initial job status
+        output_prefix: S3 output prefix for the job
 
     Returns:
-        True if stored successfully, False if already exists
-
-    Raises:
-        IdempotencyError: If DynamoDB operation fails
+        Dictionary with:
+        - reserved: True if slot was reserved, False if already taken
+        - existing_job: If not reserved, info about the existing job
     """
     settings = get_settings()
 
@@ -138,9 +153,9 @@ def store_job_reference(
         table.put_item(
             Item={
                 "idempotency_token": idempotency_token,
-                "job_id": job_id,
                 "manifest_id": manifest_id,
-                "status": status,
+                "status": "PENDING",  # Will be updated to SUBMITTED by Step Functions
+                "output_prefix": output_prefix,
                 "created_at": datetime.utcnow().isoformat(),
                 "ttl": ttl,
             },
@@ -148,53 +163,130 @@ def store_job_reference(
         )
 
         logger.info(
-            "Stored idempotency record",
-            extra={
-                "idempotency_token": idempotency_token[:16] + "...",
-                "job_id": job_id,
-                "manifest_id": manifest_id,
-            },
-        )
-
-        return True
-
-    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
-        # Item already exists - another Lambda beat us to it
-        logger.warning(
-            "Idempotency record already exists",
+            "Reserved job slot",
             extra={
                 "idempotency_token": idempotency_token[:16] + "...",
                 "manifest_id": manifest_id,
             },
         )
-        return False
+
+        return {"reserved": True}
+
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # Item already exists - another Lambda beat us to it
+            logger.warning(
+                "Job slot already reserved",
+                extra={
+                    "idempotency_token": idempotency_token[:16] + "...",
+                    "manifest_id": manifest_id,
+                },
+            )
+            # Fetch the existing record
+            existing = check_idempotency(idempotency_token)
+            return {
+                "reserved": False,
+                "existing_job": existing,
+            }
+        raise
 
     except Exception as e:
         logger.error(
-            "Failed to store idempotency record",
+            "Failed to reserve job slot",
             extra={
                 "idempotency_token": idempotency_token[:16] + "...",
                 "error": str(e),
             },
         )
         raise IdempotencyError(
-            f"Failed to store idempotency record: {e}",
+            f"Failed to reserve job slot: {e}",
             {"idempotency_token": idempotency_token[:16], "error": str(e)},
         )
+
+
+def store_job_reference(
+    idempotency_token: str,
+    job_id: str,
+    manifest_id: str,
+    status: str = "SUBMITTED",
+    output_prefix: str | None = None,
+) -> bool:
+    """Store or update job reference for idempotency tracking.
+
+    This is the second phase of the two-phase commit:
+    Updates the PENDING reservation with actual job ID and SUBMITTED status.
+
+    Args:
+        idempotency_token: Token from generate_idempotency_token
+        job_id: MediaConvert job ID
+        manifest_id: Manifest identifier
+        status: Job status (SUBMITTED, COMPLETE, ERROR, etc.)
+        output_prefix: S3 output prefix (optional, may already be set)
+
+    Returns:
+        True if stored/updated successfully, False otherwise
+    """
+    settings = get_settings()
+
+    try:
+        dynamodb = get_dynamodb_resource()
+        table = dynamodb.Table(settings.idempotency_table)
+
+        update_expr = "SET job_id = :job_id, #status = :status, updated_at = :updated_at"
+        expr_values: dict[str, Any] = {
+            ":job_id": job_id,
+            ":status": status,
+            ":updated_at": datetime.utcnow().isoformat(),
+        }
+
+        if output_prefix:
+            update_expr += ", output_prefix = :output_prefix"
+            expr_values[":output_prefix"] = output_prefix
+
+        table.update_item(
+            Key={"idempotency_token": idempotency_token},
+            UpdateExpression=update_expr,
+            ExpressionAttributeNames={"#status": "status"},
+            ExpressionAttributeValues=expr_values,
+        )
+
+        logger.info(
+            "Stored job reference",
+            extra={
+                "idempotency_token": idempotency_token[:16] + "...",
+                "job_id": job_id,
+                "manifest_id": manifest_id,
+                "status": status,
+            },
+        )
+
+        return True
+
+    except Exception as e:
+        logger.error(
+            "Failed to store job reference",
+            extra={
+                "idempotency_token": idempotency_token[:16] + "...",
+                "error": str(e),
+            },
+        )
+        return False
 
 
 def update_job_status(
     idempotency_token: str,
     status: str,
+    job_id: str | None = None,
     error_message: str | None = None,
 ) -> bool:
     """Update job status in idempotency table.
 
-    Called by job monitor when MediaConvert job completes or fails.
+    Called by Step Functions when MediaConvert job completes or fails.
 
     Args:
         idempotency_token: Token from generate_idempotency_token
         status: New status (COMPLETE, ERROR, etc.)
+        job_id: MediaConvert job ID (optional, if not already set)
         error_message: Error message if failed
 
     Returns:
@@ -211,6 +303,10 @@ def update_job_status(
             ":status": status,
             ":updated_at": datetime.utcnow().isoformat(),
         }
+
+        if job_id:
+            update_expr += ", job_id = :job_id"
+            expr_values[":job_id"] = job_id
 
         if error_message:
             update_expr += ", error_message = :error"

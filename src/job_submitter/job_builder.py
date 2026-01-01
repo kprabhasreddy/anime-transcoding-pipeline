@@ -11,7 +11,7 @@ Output structure:
 
 from typing import Any
 
-from ..shared.models import ABRVariant, TranscodeJobRequest, VideoCodec
+from ..shared.models import ABRVariant, SubtitleTrack, TranscodeJobRequest, VideoCodec
 from .abr_ladder import calculate_qvbr_settings, get_audio_settings
 
 
@@ -67,10 +67,10 @@ def build_mediaconvert_job(request: TranscodeJobRequest) -> dict[str, Any]:
 
 
 def _build_input(request: TranscodeJobRequest) -> dict[str, Any]:
-    """Build input configuration with audio selectors.
+    """Build input configuration with audio and caption selectors.
 
     Creates separate audio selectors for each language track,
-    enabling multi-language output.
+    and caption selectors for subtitle files.
     """
     manifest = request.manifest
 
@@ -84,7 +84,25 @@ def _build_input(request: TranscodeJobRequest) -> dict[str, Any]:
             "Tracks": [track.track_index],
         }
 
-    return {
+    # Build caption selectors for subtitle tracks
+    caption_selectors: dict[str, Any] = {}
+    for track in manifest.subtitle_tracks:
+        selector_name = f"Caption_{track.language.value}"
+        # Construct full S3 URI for subtitle file
+        # Subtitle paths are relative to the manifest location
+        input_bucket = request.input_s3_uri.rsplit("/", 1)[0]
+        subtitle_uri = f"{input_bucket}/{track.file_path}"
+
+        caption_selectors[selector_name] = {
+            "SourceSettings": {
+                "SourceType": "SCC" if track.format.value == "SCC" else "WEBVTT",
+                "FileSourceSettings": {
+                    "SourceFile": subtitle_uri,
+                },
+            },
+        }
+
+    input_config: dict[str, Any] = {
         "FileInput": request.input_s3_uri,
         "AudioSelectors": audio_selectors,
         "VideoSelector": {
@@ -98,6 +116,12 @@ def _build_input(request: TranscodeJobRequest) -> dict[str, Any]:
         "DeblockFilter": "DISABLED",
         "DenoiseFilter": "DISABLED",
     }
+
+    # Only add caption selectors if there are subtitle tracks
+    if caption_selectors:
+        input_config["CaptionSelectors"] = caption_selectors
+
+    return input_config
 
 
 def _build_hls_output_group(
@@ -128,6 +152,11 @@ def _build_hls_output_group(
         output = _build_hls_audio_output(request, track)
         outputs.append(output)
 
+    # Create caption outputs for each subtitle track
+    for track in request.manifest.subtitle_tracks:
+        output = _build_hls_caption_output(request, track)
+        outputs.append(output)
+
     return {
         "Name": "HLS",
         "OutputGroupSettings": {
@@ -145,7 +174,7 @@ def _build_hls_output_group(
                 "DirectoryStructure": "SINGLE_DIRECTORY",
                 "ProgramDateTime": "INCLUDE",
                 "ProgramDateTimePeriod": 600,
-                "CaptionLanguageSetting": "OMIT",
+                "CaptionLanguageSetting": "INSERT",
                 "CodecSpecification": "RFC_4281",
             },
         },
@@ -223,6 +252,38 @@ def _build_hls_audio_output(
                 "LanguageCodeControl": "USE_CONFIGURED",
                 "CodecSettings": get_audio_settings(track.channels),
                 "StreamName": track.label,
+            }
+        ],
+    }
+
+
+def _build_hls_caption_output(
+    request: TranscodeJobRequest,
+    track: SubtitleTrack,
+) -> dict[str, Any]:
+    """Build HLS WebVTT caption output for a subtitle track.
+
+    Outputs subtitles as WebVTT sidecar files referenced in the HLS playlist.
+    """
+    # Map language code to ISO 639-2 (3-letter) for MediaConvert
+    lang_code = track.language.value.split("-")[0].upper()[:3]
+
+    return {
+        "NameModifier": f"_caption_{track.language.value}",
+        "ContainerSettings": {
+            "Container": "RAW",
+        },
+        "CaptionDescriptions": [
+            {
+                "CaptionSelectorName": f"Caption_{track.language.value}",
+                "DestinationSettings": {
+                    "DestinationType": "WEBVTT",
+                    "WebvttDestinationSettings": {
+                        "StylePassthrough": "STRICT",
+                    },
+                },
+                "LanguageCode": lang_code,
+                "LanguageDescription": track.label,
             }
         ],
     }
