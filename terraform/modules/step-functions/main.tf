@@ -314,20 +314,30 @@ resource "aws_sfn_state_machine" "transcoding_pipeline" {
         Default = "SubmitMediaConvertJob"
       }
 
-      # Mock mode: simulate job completion
+      # Mock mode: simulate job completion with proper result structure
       MockJobComplete = {
-        Type    = "Pass"
-        Result  = "COMPLETE"
-        ResultPath = "$.mediaconvert_status"
-        Next    = "ValidateOutput"
+        Type = "Pass"
+        Result = {
+          Job = {
+            Id     = "mock-job-id"
+            Status = "COMPLETE"
+          }
+        }
+        ResultPath = "$.mediaconvert_result"
+        Next       = "ValidateOutput"
       }
 
-      # Handle already-submitted job
+      # Handle already-submitted job with proper result structure
       HandleIdempotentJob = {
-        Type    = "Pass"
-        Result  = "IDEMPOTENT_SKIP"
-        ResultPath = "$.mediaconvert_status"
-        Next    = "NotifySuccess"
+        Type = "Pass"
+        Result = {
+          Job = {
+            Id     = "idempotent-existing-job"
+            Status = "COMPLETE"
+          }
+        }
+        ResultPath = "$.mediaconvert_result"
+        Next       = "NotifySuccess"
       }
 
       # Step 3: Submit MediaConvert job and wait for completion
