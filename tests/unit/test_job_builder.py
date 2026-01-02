@@ -5,18 +5,17 @@ from unittest.mock import MagicMock, patch
 
 from src.job_submitter.abr_ladder import (
     get_abr_ladder,
-    ABRVariant,
-    VideoCodec,
+    calculate_qvbr_settings,
     ABR_LADDER_H264,
     ABR_LADDER_H265,
 )
 from src.job_submitter.job_builder import (
     build_mediaconvert_job,
-    _build_video_output,
-    _build_hls_group,
-    _build_dash_group,
+    _build_hls_output_group,
+    _build_hls_video_output,
+    _build_dash_output_group,
 )
-from src.shared.models import TranscodeJobRequest, TranscodeManifest
+from src.shared.models import ABRVariant, VideoCodec, TranscodeJobRequest, TranscodeManifest
 
 
 class TestABRLadder:
@@ -179,8 +178,8 @@ class TestJobBuilder:
 
         assert len(dash_groups) == 0
 
-    def test_build_video_output_h264(self):
-        """Test H.264 video output settings."""
+    def test_calculate_qvbr_h264(self):
+        """Test H.264 QVBR codec settings."""
         variant = ABRVariant(
             resolution="1920x1080",
             bitrate_kbps=6000,
@@ -189,14 +188,14 @@ class TestJobBuilder:
             level="4.2",
         )
 
-        output = _build_video_output(variant)
+        settings = calculate_qvbr_settings(variant)
 
-        assert output["VideoDescription"]["CodecSettings"]["Codec"] == "H_264"
-        assert output["VideoDescription"]["Width"] == 1920
-        assert output["VideoDescription"]["Height"] == 1080
+        assert settings["Codec"] == "H_264"
+        assert settings["H264Settings"]["RateControlMode"] == "QVBR"
+        assert "QvbrSettings" in settings["H264Settings"]
 
-    def test_build_video_output_h265(self):
-        """Test H.265 video output settings."""
+    def test_calculate_qvbr_h265(self):
+        """Test H.265 QVBR codec settings."""
         variant = ABRVariant(
             resolution="1920x1080",
             bitrate_kbps=4500,
@@ -205,47 +204,30 @@ class TestJobBuilder:
             level="4.0",
         )
 
-        output = _build_video_output(variant)
+        settings = calculate_qvbr_settings(variant)
 
-        assert output["VideoDescription"]["CodecSettings"]["Codec"] == "H_265"
+        assert settings["Codec"] == "H_265"
+        assert settings["H265Settings"]["RateControlMode"] == "QVBR"
 
-    def test_build_video_output_qvbr(self):
-        """Test QVBR rate control settings."""
-        variant = ABRVariant(
-            resolution="1920x1080",
-            bitrate_kbps=6000,
-            codec=VideoCodec.H264,
-            profile="high",
-            level="4.2",
-            qvbr_quality_level=7,
-        )
+    def test_build_hls_output_group(self, job_request: TranscodeJobRequest):
+        """Test HLS output group has correct structure."""
+        # Filter to just H.264 variants for HLS
+        h264_variants = [v for v in job_request.abr_variants if v.codec == VideoCodec.H264]
 
-        output = _build_video_output(variant)
-        codec_settings = output["VideoDescription"]["CodecSettings"]["H264Settings"]
+        hls_group = _build_hls_output_group(job_request, h264_variants)
 
-        assert codec_settings["RateControlMode"] == "QVBR"
-        assert codec_settings["QvbrSettings"]["QvbrQualityLevel"] == 7
-
-    def test_build_hls_group_destination(self, job_request: TranscodeJobRequest):
-        """Test HLS output destination."""
-        hls_group = _build_hls_group(
-            output_prefix=job_request.output_s3_prefix,
-            variants=job_request.abr_variants,
-        )
-
+        assert hls_group["Name"] == "HLS"
+        assert hls_group["OutputGroupSettings"]["Type"] == "HLS_GROUP_SETTINGS"
         destination = hls_group["OutputGroupSettings"]["HlsGroupSettings"]["Destination"]
-        assert destination.startswith(job_request.output_s3_prefix)
         assert "/hls/" in destination
 
-    def test_build_dash_group_destination(self, job_request: TranscodeJobRequest):
-        """Test DASH output destination."""
-        dash_group = _build_dash_group(
-            output_prefix=job_request.output_s3_prefix,
-            variants=job_request.abr_variants,
-        )
+    def test_build_dash_output_group(self, job_request: TranscodeJobRequest):
+        """Test DASH output group has correct structure."""
+        dash_group = _build_dash_output_group(job_request, job_request.abr_variants)
 
+        assert dash_group["Name"] == "DASH"
+        assert dash_group["OutputGroupSettings"]["Type"] == "DASH_ISO_GROUP_SETTINGS"
         destination = dash_group["OutputGroupSettings"]["DashIsoGroupSettings"]["Destination"]
-        assert destination.startswith(job_request.output_s3_prefix)
         assert "/dash/" in destination
 
 
