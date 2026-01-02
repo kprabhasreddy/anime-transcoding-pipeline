@@ -103,6 +103,13 @@ class Settings(BaseSettings):
         description="SNS topic for error notifications",
     )
 
+    # Webhook Configuration
+    webhook_secret: str = Field(
+        default="",
+        alias="WEBHOOK_SECRET",
+        description="Secret for HMAC-SHA256 webhook signature verification",
+    )
+
     # Feature Flags
     mock_mode: bool = Field(
         default=True,

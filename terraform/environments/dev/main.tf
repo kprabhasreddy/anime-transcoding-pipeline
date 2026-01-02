@@ -146,6 +146,8 @@ module "step_functions" {
   output_validator_arn     = module.lambda.output_validator_arn
   notification_handler_arn = module.lambda.notification_handler_arn
   sns_topic_arns           = module.sns.all_topic_arns
+  mediaconvert_queue_arn   = module.mediaconvert.queue_arn
+  mediaconvert_role_arn    = module.mediaconvert.role_arn
   tags                     = local.common_tags
 }
 

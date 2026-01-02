@@ -260,7 +260,7 @@ def validate_media_info(
     expected_duration: float,
     expected_width: int,
     expected_height: int,
-    duration_tolerance: float = 1.0,
+    duration_tolerance: float = 0.5,
 ) -> list[str]:
     """Validate media info against expected values.
 

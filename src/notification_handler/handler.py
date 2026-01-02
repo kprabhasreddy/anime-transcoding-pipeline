@@ -312,7 +312,7 @@ def _send_success_notification(
     variants: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Send success notification to SNS."""
-    if not settings.success_sns_topic_arn:
+    if not settings.sns_success_topic_arn:
         logger.info("No success SNS topic configured, skipping notification")
         return {"notification_sent": False, "reason": "No topic configured"}
 
@@ -332,7 +332,7 @@ def _send_success_notification(
     )
 
     response = sns_client.publish(
-        TopicArn=settings.success_sns_topic_arn,
+        TopicArn=settings.sns_success_topic_arn,
         Subject=subject[:100],  # SNS subject limit
         Message=message,
         MessageAttributes={
@@ -367,7 +367,7 @@ def _send_error_notification(
     job_id: str | None,
 ) -> dict[str, Any]:
     """Send error notification to SNS."""
-    if not settings.error_sns_topic_arn:
+    if not settings.sns_error_topic_arn:
         logger.info("No error SNS topic configured, skipping notification")
         return {"notification_sent": False, "reason": "No topic configured"}
 
@@ -387,7 +387,7 @@ def _send_error_notification(
     )
 
     response = sns_client.publish(
-        TopicArn=settings.error_sns_topic_arn,
+        TopicArn=settings.sns_error_topic_arn,
         Subject=subject[:100],
         Message=message,
         MessageAttributes={

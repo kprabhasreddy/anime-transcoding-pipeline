@@ -141,6 +141,42 @@ resource "aws_iam_role_policy" "sfn_sns" {
   })
 }
 
+# MediaConvert policy (for .sync integration)
+resource "aws_iam_role_policy" "sfn_mediaconvert" {
+  name = "mediaconvert"
+  role = aws_iam_role.step_functions.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "mediaconvert:CreateJob",
+          "mediaconvert:GetJob",
+          "mediaconvert:CancelJob"
+        ]
+        Resource = [
+          var.mediaconvert_queue_arn,
+          "${replace(var.mediaconvert_queue_arn, ":queues/", ":jobs/")}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "iam:PassRole"
+        ]
+        Resource = var.mediaconvert_role_arn
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "mediaconvert.amazonaws.com"
+          }
+        }
+      }
+    ]
+  })
+}
+
 # -----------------------------------------------------------------------------
 # CloudWatch Log Group for Step Functions
 # -----------------------------------------------------------------------------
@@ -210,14 +246,15 @@ resource "aws_sfn_state_machine" "transcoding_pipeline" {
           {
             Variable      = "$.validation_result.validation_passed"
             BooleanEquals = true
-            Next          = "SubmitTranscodeJob"
+            Next          = "BuildJobConfig"
           }
         ]
         Default = "HandleValidationError"
       }
 
-      # Step 2: Submit MediaConvert job
-      SubmitTranscodeJob = {
+      # Step 2: Build MediaConvert job configuration
+      # Lambda returns job settings; Step Functions submits via .sync integration
+      BuildJobConfig = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
         Parameters = {
@@ -227,15 +264,19 @@ resource "aws_sfn_state_machine" "transcoding_pipeline" {
             "input_s3_uri.$"      = "$.input_s3_uri"
             "output_s3_prefix.$"  = "$.output_s3_prefix"
             "validation_result.$" = "$.validation_result"
+            "force_reprocess.$"   = "$.force_reprocess"
           }
         }
-        ResultPath = "$.job_submission"
+        ResultPath = "$.job_config"
         ResultSelector = {
-          "job_id.$"        = "$.Payload.job_id"
-          "status.$"        = "$.Payload.status"
-          "output_prefix.$" = "$.Payload.output_prefix"
-          "variants.$"      = "$.Payload.variants"
-          "idempotent.$"    = "$.Payload.idempotent"
+          "skip_transcode.$"         = "$.Payload.skip_transcode"
+          "mock_mode.$"              = "$.Payload.mock_mode"
+          "idempotent.$"             = "$.Payload.idempotent"
+          "job_settings.$"           = "$.Payload.job_settings"
+          "job_metadata.$"           = "$.Payload.job_metadata"
+          "mediaconvert_role_arn.$"  = "$.Payload.mediaconvert_role_arn"
+          "mediaconvert_queue_arn.$" = "$.Payload.mediaconvert_queue_arn"
+          "existing_job.$"           = "$.Payload.existing_job"
         }
         Retry = [
           {
@@ -252,25 +293,25 @@ resource "aws_sfn_state_machine" "transcoding_pipeline" {
             Next        = "HandleJobSubmissionError"
           }
         ]
-        Next = "CheckMockMode"
+        Next = "CheckSkipTranscode"
       }
 
-      # Check if running in mock mode (skip waiting for MediaConvert)
-      CheckMockMode = {
+      # Check if we should skip transcoding (idempotent or mock)
+      CheckSkipTranscode = {
         Type = "Choice"
         Choices = [
           {
-            Variable      = "$.job_submission.status"
-            StringEquals  = "MOCK_SUBMITTED"
-            Next          = "MockJobComplete"
-          },
-          {
-            Variable      = "$.job_submission.idempotent"
+            Variable      = "$.job_config.skip_transcode"
             BooleanEquals = true
             Next          = "HandleIdempotentJob"
+          },
+          {
+            Variable      = "$.job_config.mock_mode"
+            BooleanEquals = true
+            Next          = "MockJobComplete"
           }
         ]
-        Default = "WaitForMediaConvert"
+        Default = "SubmitMediaConvertJob"
       }
 
       # Mock mode: simulate job completion
@@ -289,14 +330,14 @@ resource "aws_sfn_state_machine" "transcoding_pipeline" {
         Next    = "NotifySuccess"
       }
 
-      # Step 3: Wait for MediaConvert job completion
-      WaitForMediaConvert = {
+      # Step 3: Submit MediaConvert job and wait for completion
+      SubmitMediaConvertJob = {
         Type     = "Task"
         Resource = "arn:aws:states:::mediaconvert:createJob.sync"
         Parameters = {
-          "Role.$"     = "$.mediaconvert_role_arn"
-          "Settings.$" = "$.job_settings"
-          "Queue.$"    = "$.mediaconvert_queue_arn"
+          "Role.$"     = "$.job_config.mediaconvert_role_arn"
+          "Settings.$" = "$.job_config.job_settings"
+          "Queue.$"    = "$.job_config.mediaconvert_queue_arn"
         }
         ResultPath = "$.mediaconvert_result"
         Retry = [
@@ -325,9 +366,9 @@ resource "aws_sfn_state_machine" "transcoding_pipeline" {
           FunctionName = var.output_validator_arn
           Payload = {
             "manifest.$"       = "$.manifest"
-            "job_id.$"         = "$.job_submission.job_id"
-            "output_prefix.$"  = "$.job_submission.output_prefix"
-            "variants.$"       = "$.job_submission.variants"
+            "job_id.$"         = "$.mediaconvert_result.Job.Id"
+            "output_prefix.$"  = "$.job_config.job_metadata.output_prefix"
+            "variants.$"       = "$.job_config.job_metadata.variants"
           }
         }
         ResultPath = "$.output_validation"
@@ -375,9 +416,9 @@ resource "aws_sfn_state_machine" "transcoding_pipeline" {
           Payload = {
             "type"              = "SUCCESS"
             "manifest.$"        = "$.manifest"
-            "job_id.$"          = "$.job_submission.job_id"
-            "output_prefix.$"   = "$.job_submission.output_prefix"
-            "variants.$"        = "$.job_submission.variants"
+            "job_id.$"          = "$.mediaconvert_result.Job.Id"
+            "output_prefix.$"   = "$.job_config.job_metadata.output_prefix"
+            "variants.$"        = "$.job_config.job_metadata.variants"
           }
         }
         ResultPath = "$.notification"
@@ -451,7 +492,7 @@ resource "aws_sfn_state_machine" "transcoding_pipeline" {
             "type"       = "ERROR"
             "error_type" = "TRANSCODE_FAILED"
             "manifest.$" = "$.manifest"
-            "job_id.$"   = "$.job_submission.job_id"
+            "job_id.$"   = "$.job_config.job_metadata.manifest_id"
             "error.$"    = "$.error"
           }
         }
@@ -474,7 +515,7 @@ resource "aws_sfn_state_machine" "transcoding_pipeline" {
             "type"       = "ERROR"
             "error_type" = "OUTPUT_VALIDATION_FAILED"
             "manifest.$" = "$.manifest"
-            "job_id.$"   = "$.job_submission.job_id"
+            "job_id.$"   = "$.mediaconvert_result.Job.Id"
             "error.$"    = "$.error"
           }
         }
@@ -506,12 +547,15 @@ resource "aws_sfn_state_machine" "transcoding_pipeline" {
 }
 
 # -----------------------------------------------------------------------------
-# EventBridge Rule for MediaConvert Events
+# EventBridge Rule for MediaConvert Events (Observability)
 # -----------------------------------------------------------------------------
+# Note: The core pipeline uses mediaconvert:createJob.sync which handles
+# job completion natively. This EventBridge rule provides additional
+# observability by logging all MediaConvert job state changes.
 
 resource "aws_cloudwatch_event_rule" "mediaconvert_events" {
   name        = "${var.project_name}-mediaconvert-events-${var.environment}"
-  description = "Capture MediaConvert job status changes"
+  description = "Capture MediaConvert job status changes for observability"
 
   event_pattern = jsonencode({
     source      = ["aws.mediaconvert"]
@@ -523,5 +567,44 @@ resource "aws_cloudwatch_event_rule" "mediaconvert_events" {
 
   tags = merge(var.tags, {
     Name = "${var.project_name}-mediaconvert-events"
+  })
+}
+
+# CloudWatch Log Group for MediaConvert events
+resource "aws_cloudwatch_log_group" "mediaconvert_events" {
+  name              = "/aws/events/${var.project_name}-mediaconvert-${var.environment}"
+  retention_in_days = var.log_retention_days
+
+  tags = merge(var.tags, {
+    Service = "mediaconvert-events"
+  })
+}
+
+# EventBridge target - log all MediaConvert events to CloudWatch
+resource "aws_cloudwatch_event_target" "mediaconvert_logs" {
+  rule      = aws_cloudwatch_event_rule.mediaconvert_events.name
+  target_id = "cloudwatch-logs"
+  arn       = aws_cloudwatch_log_group.mediaconvert_events.arn
+}
+
+# Allow EventBridge to write to CloudWatch Logs
+resource "aws_cloudwatch_log_resource_policy" "mediaconvert_events" {
+  policy_name = "${var.project_name}-mediaconvert-events-${var.environment}"
+
+  policy_document = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "events.amazonaws.com"
+        }
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "${aws_cloudwatch_log_group.mediaconvert_events.arn}:*"
+      }
+    ]
   })
 }

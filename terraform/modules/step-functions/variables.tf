@@ -42,6 +42,16 @@ variable "sns_topic_arns" {
   default     = []
 }
 
+variable "mediaconvert_queue_arn" {
+  description = "ARN of the MediaConvert queue"
+  type        = string
+}
+
+variable "mediaconvert_role_arn" {
+  description = "ARN of the IAM role for MediaConvert"
+  type        = string
+}
+
 variable "log_retention_days" {
   description = "Number of days to retain CloudWatch logs"
   type        = number
