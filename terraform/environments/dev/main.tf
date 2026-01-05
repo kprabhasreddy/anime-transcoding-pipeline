@@ -111,6 +111,7 @@ module "mediaconvert" {
   input_bucket_arn      = module.s3_buckets.input_bucket_arn
   output_bucket_arn     = module.s3_buckets.output_bucket_arn
   kms_key_arn           = module.kms.key_arn
+  enable_kms            = true
   create_priority_queue = false
   tags                  = local.common_tags
 }
@@ -140,7 +141,7 @@ module "step_functions" {
 
   project_name             = var.project_name
   environment              = var.environment
-  lambda_arns              = module.lambda.all_lambda_arns
+  lambda_arns              = values(module.lambda.all_lambda_arns)
   input_validator_arn      = module.lambda.input_validator_arn
   job_submitter_arn        = module.lambda.job_submitter_arn
   output_validator_arn     = module.lambda.output_validator_arn
@@ -172,6 +173,7 @@ module "lambda" {
   mediaconvert_role_arn  = module.mediaconvert.role_arn
   state_machine_arn      = module.step_functions.state_machine_arn
   kms_key_arn            = module.kms.key_arn
+  enable_kms             = true
   sns_topic_arns         = module.sns.all_topic_arns
   success_sns_topic_arn  = module.sns.success_topic_arn
   error_sns_topic_arn    = module.sns.error_topic_arn

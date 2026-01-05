@@ -27,6 +27,12 @@ variable "kms_key_arn" {
   default     = ""
 }
 
+variable "enable_kms" {
+  description = "Whether KMS encryption is enabled"
+  type        = bool
+  default     = false
+}
+
 variable "create_priority_queue" {
   description = "Whether to create a priority queue for urgent jobs"
   type        = bool

@@ -174,7 +174,7 @@ resource "aws_iam_role_policy" "lambda_mediaconvert" {
 
 # KMS access policy
 resource "aws_iam_role_policy" "lambda_kms" {
-  count = var.kms_key_arn != "" ? 1 : 0
+  count = var.enable_kms ? 1 : 0
   name  = "kms-access"
   role  = aws_iam_role.lambda_execution.id
 

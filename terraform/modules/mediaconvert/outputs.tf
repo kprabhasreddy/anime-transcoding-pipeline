@@ -26,7 +26,5 @@ output "role_name" {
   value       = aws_iam_role.mediaconvert.name
 }
 
-output "endpoint" {
-  description = "MediaConvert account endpoint"
-  value       = data.aws_mediaconvert_queue.default.id
-}
+# Note: MediaConvert endpoint must be discovered at runtime via DescribeEndpoints API
+# The Lambda functions handle this automatically

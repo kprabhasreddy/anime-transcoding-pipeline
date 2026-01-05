@@ -60,3 +60,25 @@ output "layer_arn" {
   description = "ARN of the shared Lambda layer"
   value       = aws_lambda_layer_version.shared.arn
 }
+
+output "all_lambda_arns" {
+  description = "Map of all Lambda function ARNs"
+  value = {
+    manifest_parser      = aws_lambda_function.manifest_parser.arn
+    input_validator      = aws_lambda_function.input_validator.arn
+    job_submitter        = aws_lambda_function.job_submitter.arn
+    output_validator     = aws_lambda_function.output_validator.arn
+    notification_handler = aws_lambda_function.notification_handler.arn
+  }
+}
+
+output "all_lambda_names" {
+  description = "List of all Lambda function names"
+  value = [
+    aws_lambda_function.manifest_parser.function_name,
+    aws_lambda_function.input_validator.function_name,
+    aws_lambda_function.job_submitter.function_name,
+    aws_lambda_function.output_validator.function_name,
+    aws_lambda_function.notification_handler.function_name,
+  ]
+}

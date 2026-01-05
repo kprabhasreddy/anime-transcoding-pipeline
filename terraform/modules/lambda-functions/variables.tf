@@ -72,6 +72,12 @@ variable "kms_key_arn" {
   default     = ""
 }
 
+variable "enable_kms" {
+  description = "Whether KMS encryption is enabled"
+  type        = bool
+  default     = false
+}
+
 variable "sns_topic_arns" {
   description = "List of SNS topic ARNs for notifications"
   type        = list(string)

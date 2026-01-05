@@ -31,14 +31,9 @@ resource "aws_dynamodb_table" "transcoding_jobs" {
   billing_mode = var.billing_mode
   hash_key     = "idempotency_token"
 
-  # On-demand capacity (default) or provisioned
-  dynamic "provisioned_throughput" {
-    for_each = var.billing_mode == "PROVISIONED" ? [1] : []
-    content {
-      read_capacity  = var.read_capacity
-      write_capacity = var.write_capacity
-    }
-  }
+  # Provisioned capacity (only used when billing_mode is PROVISIONED)
+  read_capacity  = var.billing_mode == "PROVISIONED" ? var.read_capacity : null
+  write_capacity = var.billing_mode == "PROVISIONED" ? var.write_capacity : null
 
   # Primary key
   attribute {
@@ -74,14 +69,9 @@ resource "aws_dynamodb_table" "transcoding_jobs" {
     hash_key        = "manifest_id"
     range_key       = "created_at"
     projection_type = "ALL"
-
-    dynamic "provisioned_throughput" {
-      for_each = var.billing_mode == "PROVISIONED" ? [1] : []
-      content {
-        read_capacity  = var.read_capacity
-        write_capacity = var.write_capacity
-      }
-    }
+    # Note: GSI capacity is managed automatically with PAY_PER_REQUEST billing
+    read_capacity   = var.billing_mode == "PROVISIONED" ? var.read_capacity : null
+    write_capacity  = var.billing_mode == "PROVISIONED" ? var.write_capacity : null
   }
 
   # GSI2: Query by status with time ordering
@@ -91,14 +81,8 @@ resource "aws_dynamodb_table" "transcoding_jobs" {
     hash_key        = "status"
     range_key       = "created_at"
     projection_type = "KEYS_ONLY"
-
-    dynamic "provisioned_throughput" {
-      for_each = var.billing_mode == "PROVISIONED" ? [1] : []
-      content {
-        read_capacity  = var.read_capacity
-        write_capacity = var.write_capacity
-      }
-    }
+    read_capacity   = var.billing_mode == "PROVISIONED" ? var.read_capacity : null
+    write_capacity  = var.billing_mode == "PROVISIONED" ? var.write_capacity : null
   }
 
   # GSI3: Lookup by MediaConvert job_id
@@ -107,14 +91,8 @@ resource "aws_dynamodb_table" "transcoding_jobs" {
     name            = "job-id-index"
     hash_key        = "job_id"
     projection_type = "ALL"
-
-    dynamic "provisioned_throughput" {
-      for_each = var.billing_mode == "PROVISIONED" ? [1] : []
-      content {
-        read_capacity  = var.read_capacity
-        write_capacity = var.write_capacity
-      }
-    }
+    read_capacity   = var.billing_mode == "PROVISIONED" ? var.read_capacity : null
+    write_capacity  = var.billing_mode == "PROVISIONED" ? var.write_capacity : null
   }
 
   # TTL for automatic cleanup of old records

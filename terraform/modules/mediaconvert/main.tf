@@ -23,11 +23,6 @@ terraform {
 data "aws_caller_identity" "current" {}
 data "aws_region" "current" {}
 
-# Get MediaConvert endpoint (account-specific)
-data "aws_mediaconvert_queue" "default" {
-  id = "Default"
-}
-
 # -----------------------------------------------------------------------------
 # MediaConvert Queues
 # -----------------------------------------------------------------------------
@@ -141,7 +136,7 @@ resource "aws_iam_role_policy" "mediaconvert_s3" {
 
 # KMS Access Policy (if using KMS encryption)
 resource "aws_iam_role_policy" "mediaconvert_kms" {
-  count = var.kms_key_arn != "" ? 1 : 0
+  count = var.enable_kms ? 1 : 0
   name  = "kms-access"
   role  = aws_iam_role.mediaconvert.id
 

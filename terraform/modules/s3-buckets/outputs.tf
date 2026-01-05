@@ -2,6 +2,11 @@
 # ============================
 
 output "input_bucket_id" {
+  description = "Input bucket ID"
+  value       = aws_s3_bucket.input.id
+}
+
+output "input_bucket_name" {
   description = "Input bucket name"
   value       = aws_s3_bucket.input.id
 }
@@ -17,6 +22,11 @@ output "input_bucket_domain_name" {
 }
 
 output "output_bucket_id" {
+  description = "Output bucket ID"
+  value       = aws_s3_bucket.output.id
+}
+
+output "output_bucket_name" {
   description = "Output bucket name"
   value       = aws_s3_bucket.output.id
 }

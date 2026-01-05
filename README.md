@@ -1,354 +1,332 @@
 # Anime Transcoding Pipeline
 
-> Production-grade AWS video transcoding pipeline demonstrating enterprise streaming patterns
+> Production-grade video transcoding with the operational concerns that actually matter
 
-[![CI](https://github.com/kprabhasreddy/anime-transcoding-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/kprabhasreddy/anime-transcoding-pipeline/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/kprabhasreddy/anime-transcoding-pipeline/branch/main/graph/badge.svg)](https://codecov.io/gh/kprabhasreddy/anime-transcoding-pipeline)
 [![Terraform](https://img.shields.io/badge/terraform-1.5+-purple.svg)](https://www.terraform.io/)
 [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![AWS](https://img.shields.io/badge/AWS-MediaConvert-orange.svg)](https://aws.amazon.com/mediaconvert/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Overview
+<!-- TODO: Add GIF of pipeline execution here -->
+<!-- ![Pipeline Demo](docs/assets/pipeline-demo.gif) -->
 
-A serverless video transcoding pipeline built for anime streaming, demonstrating the architecture patterns used by major streaming platforms. This project showcases expertise in:
+## The Operational Problems
 
-- **Video Engineering**: ABR ladder configuration, QVBR encoding, HLS/DASH packaging
-- **AWS Expertise**: MediaConvert, Step Functions, Lambda, CloudFront, S3
-- **Infrastructure as Code**: Modular Terraform with security best practices
-- **Quality Assurance**: Checksum validation, duration matching, playlist verification
-- **Observability**: CloudWatch dashboards, alarms, structured logging with Powertools
+This isn't a MediaConvert wrapper. It's a pipeline that handles the problems you don't think about until they cost you money:
+
+- **Duplicate processing** — S3 event retries trigger the same job twice. Now you've paid for two encodes.
+- **Encoder settings drift** — Your H.264 profile changes. Which 500 episodes need re-encoding? How do you track that?
+- **Silent failures** — MediaConvert returns "SUCCESS" but the HLS playlist is malformed. Users see errors.
+- **Race conditions** — Two Lambdas check "is this processed?" simultaneously. Both say no. Both submit jobs.
+
+---
 
 ## Architecture
 
+<!-- TODO: Replace with Excalidraw/Lucidchart diagram -->
+
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                           ANIME TRANSCODING PIPELINE                         │
-├─────────────────────────────────────────────────────────────────────────────┤
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         ANIME TRANSCODING PIPELINE                           │
+├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  ┌──────────┐     ┌─────────────┐     ┌──────────────────────────────────┐  │
-│  │   XML    │────▶│  S3 Input   │────▶│      Lambda: Manifest Parser     │  │
-│  │ Manifest │     │   Bucket    │     │  - Parse anime metadata          │  │
-│  └──────────┘     │  (KMS enc)  │     │  - Validate schema               │  │
-│                   └─────────────┘     │  - Trigger Step Functions        │  │
-│  ┌──────────┐           │             └──────────────┬───────────────────┘  │
-│  │Mezzanine │───────────┘                            │                      │
-│  │  File    │                                        ▼                      │
-│  └──────────┘                        ┌───────────────────────────────────┐  │
-│                                      │     Step Functions Orchestrator   │  │
-│                                      │  ┌─────────────────────────────┐  │  │
-│                                      │  │  1. Input Validation        │  │  │
-│                                      │  │     - Checksum (MD5/XXHash) │  │  │
-│                                      │  │     - File size match       │  │  │
-│                                      │  │     - Container validation  │  │  │
-│                                      │  └──────────────┬──────────────┘  │  │
-│                                      │                 ▼                  │  │
-│                                      │  ┌─────────────────────────────┐  │  │
-│                                      │  │  2. Job Submission          │  │  │
-│                                      │  │     - Build ABR ladder      │  │  │
-│                                      │  │     - Idempotency check     │  │  │
-│                                      │  │     - Submit to MediaConvert│  │  │
-│                                      │  └──────────────┬──────────────┘  │  │
-│                                      │                 ▼                  │  │
-│                                      │  ┌─────────────────────────────┐  │  │
-│                                      │  │  3. MediaConvert            │  │  │
-│                                      │  │     - H.264 + H.265 (QVBR)  │  │  │
-│                                      │  │     - HLS + DASH outputs    │  │  │
-│  ┌──────────────┐                    │  │     - Multiple bitrates     │  │  │
-│  │  CloudWatch  │◀───────────────────│  └──────────────┬──────────────┘  │  │
-│  │  Dashboard   │                    │                 ▼                  │  │
-│  │  + Alarms    │                    │  ┌─────────────────────────────┐  │  │
-│  └──────────────┘                    │  │  4. Output Validation       │  │  │
-│         │                            │  │     - HLS playlist check    │  │  │
-│         ▼                            │  │     - DASH MPD validation   │  │  │
-│  ┌──────────────┐                    │  │     - Duration matching     │  │  │
-│  │     SNS      │                    │  └──────────────┬──────────────┘  │  │
-│  │Notifications │                    │                 ▼                  │  │
-│  └──────────────┘                    │  ┌─────────────────────────────┐  │  │
-│                                      │  │  5. Notification            │  │  │
-│                                      │  │     - Success/Error alerts  │  │  │
-│                                      │  └─────────────────────────────┘  │  │
-│                                      └───────────────────────────────────┘  │
-│                                                       │                      │
-│                                                       ▼                      │
-│                   ┌─────────────┐     ┌──────────────────────────────────┐  │
-│                   │  S3 Output  │────▶│          CloudFront CDN          │  │
-│                   │   Bucket    │     │  - Signed URLs for protection    │  │
-│                   │  (KMS enc)  │     │  - Global edge caching           │  │
-│                   └─────────────┘     │  - HLS/DASH streaming            │  │
-│                                       └──────────────────────────────────┘  │
+│   ┌─────────────┐         ┌─────────────────────────────────────────────┐   │
+│   │ XML Manifest│────────▶│           Step Functions Orchestrator       │   │
+│   │ + Mezzanine │         │                                             │   │
+│   │   (S3)      │         │  ┌─────────┐  ┌─────────┐  ┌─────────────┐ │   │
+│   └─────────────┘         │  │ Input   │  │  Job    │  │ MediaConvert│ │   │
+│                           │  │Validator│─▶│Submitter│─▶│   (.sync)   │ │   │
+│                           │  └─────────┘  └─────────┘  └─────────────┘ │   │
+│                           │       │            │              │         │   │
+│   ┌─────────────┐         │       │            │              │         │   │
+│   │  DynamoDB   │◀────────│───────┴────────────┘              │         │   │
+│   │(Idempotency)│         │                                   ▼         │   │
+│   └─────────────┘         │  ┌───────────┐    ┌──────────────────────┐ │   │
+│                           │  │  Output   │◀───│   HLS + DASH Output  │ │   │
+│                           │  │ Validator │    │        (S3)          │ │   │
+│                           │  └───────────┘    └──────────────────────┘ │   │
+│                           │       │                      │              │   │
+│   ┌─────────────┐         │       ▼                      ▼              │   │
+│   │  CloudWatch │◀────────│  ┌─────────┐         ┌────────────┐        │   │
+│   │  Dashboard  │         │  │ Notify  │         │ CloudFront │        │   │
+│   └─────────────┘         │  │ (SNS)   │         │   (CDN)    │        │   │
+│                           │  └─────────┘         └────────────┘        │   │
+│                           └─────────────────────────────────────────────┘   │
 │                                                                              │
-└─────────────────────────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Real-World Mapping
+---
 
-| This Project | Production Streaming Equivalent |
-|--------------|--------------------------------|
-| XML Manifest Parser | Content ingestion from licensors/studios |
-| ABR Ladder Config | Adaptive streaming for global audience |
-| Multi-audio tracks | Japanese + dub support |
-| Checksum validation | QC before publishing |
-| Duration matching | Sync validation for subtitles |
-| CloudFront signed URLs | Subscriber-only content protection |
-| QVBR encoding | Quality-optimized delivery |
+## Design Decisions
 
-## Quick Start
+### Idempotency with Profile Versioning
+
+The idempotency token includes the encoding profile version. Bump `v1.0` → `v2.0` when settings change, and previously-processed content automatically becomes eligible for re-encoding. No migration scripts, no manual tracking.
+
+```python
+# src/job_submitter/idempotency.py
+key_components = [
+    manifest.manifest_id,
+    manifest.mezzanine.checksum_md5,
+    str(manifest.mezzanine.file_size_bytes),
+    str(sorted([t.language for t in manifest.audio_tracks])),
+    profile_version,  # ← Change this to invalidate all previous encodes
+]
+```
+
+### Two-Phase Commit for Job Submission
+
+DynamoDB conditional writes prevent the race condition where concurrent Lambdas both think they should process a manifest:
+
+```python
+# Phase 1: Atomic slot reservation
+table.put_item(
+    Item={"idempotency_token": token, "status": "PENDING"},
+    ConditionExpression="attribute_not_exists(idempotency_token)"
+)
+
+# Phase 2: Confirm after MediaConvert accepts
+table.update_item(...)
+```
+
+### Output Validation
+
+MediaConvert "SUCCESS" means the encoder finished, not that outputs are correct. The pipeline validates:
+- HLS master playlist parses correctly
+- All variant playlists exist and reference valid segments
+- DASH MPD is well-formed
+- Duration matches source (±0.5s tolerance)
+
+### QVBR Rate Control
+
+Quality-defined variable bitrate instead of CBR. The encoder decides per-frame bitrate allocation—it's better at this than a static target.
+
+```python
+"QvbrSettings": {
+    "QvbrQualityLevel": 7,
+    "MaxAverageBitrate": 6_000_000,
+}
+```
+
+### ABR Ladder
+
+| Resolution | H.264 | H.265 | Notes |
+|------------|-------|-------|-------|
+| 1920×1080 | 6.0 Mbps | 4.5 Mbps | Primary quality |
+| 1280×720 | 3.5 Mbps | 2.5 Mbps | Tablet / good mobile |
+| 854×480 | 1.8 Mbps | — | Mobile fallback |
+| 640×360 | 0.8 Mbps | — | Low bandwidth |
+
+No H.265 at low resolutions—devices with poor connections often lack hardware HEVC decoders. The bandwidth savings don't justify compatibility issues.
+
+GOP size is 48 frames (2 seconds at 24fps). Shorter GOPs improve seek latency but hurt compression efficiency.
+
+---
+
+## Key Tradeoffs
+
+| Decision | Rationale | Cost |
+|----------|-----------|------|
+| Step Functions over SQS | Visual debugging, `.sync` waits for MediaConvert natively | ~$0.025/1000 transitions |
+| Single DynamoDB table | Cost efficiency, GSIs for all access patterns | Query complexity |
+| Dual H.264/H.265 encode | Compatibility + modern device optimization | 2× encoding cost |
+| Profile version in token | Re-encoding without database changes | Slightly larger tokens |
+
+---
+
+## What I'd Reconsider at Scale
+
+- **Step Functions Express** — Standard workflows charge per transition. Express is $1/million requests.
+- **Per-title encoding profiles** — Action sequences need more bitrate than dialogue. Content classification could optimize this.
+- **Segment-level parallelism** — Chunking the mezzanine and encoding in parallel would reduce turnaround significantly.
+- **Audio loudness normalization** — Studios deliver at inconsistent levels.
+
+---
+
+## Deployment Guide
+
+**What you're deploying:** Backend infrastructure only—Lambda functions, Step Functions state machine, S3 buckets, DynamoDB, CloudFront distribution. There is no frontend. You interact with the pipeline by uploading files to S3 and monitoring via AWS Console.
 
 ### Prerequisites
 
 - Python 3.11+
 - Terraform 1.5+
-- Docker & Docker Compose
-- AWS CLI (optional, for real deployments)
+- AWS CLI configured with credentials
+- AWS account with MediaConvert enabled (visit MediaConvert console once to activate)
 
-### One-Click Local Setup
+### 1. Clone and Setup
 
 ```bash
-# Clone the repository
 git clone https://github.com/kprabhasreddy/anime-transcoding-pipeline.git
 cd anime-transcoding-pipeline
 
-# Start LocalStack and initialize resources
-make local
-
-# Run the demo with sample anime episode
-make demo
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-### Deploy to AWS
+### 2. Build Lambda Packages
 
 ```bash
-# Configure AWS credentials
-aws configure
+mkdir -p dist
 
-# Deploy to development environment
-make deploy ENV=dev
+# Package Lambda functions
+cd src && zip -r ../dist/lambda-deployment.zip . && cd ..
 
-# Deploy to production (requires approval)
-make deploy ENV=prod
+# Package Lambda layer (dependencies only)
+pip install -r requirements-lambda.txt -t dist/layer/python
+cd dist/layer && zip -r ../lambda-layer.zip python && cd ../..
 ```
+
+### 3. Configure Terraform
+
+```bash
+cd terraform/environments/dev
+```
+
+Edit `terraform.tfvars` with your settings:
+```hcl
+aws_region          = "us-east-1"
+environment         = "dev"
+lambda_zip_path     = "../../../dist/lambda-deployment.zip"
+layer_zip_path      = "../../../dist/lambda-layer.zip"
+notification_emails = ["your-email@example.com"]
+
+# Set to true to test without MediaConvert costs
+mock_mode = false
+
+# Feature flags
+enable_h265 = true
+enable_dash = true
+```
+
+### 4. Deploy Infrastructure
+
+```bash
+terraform init
+terraform plan    # Review what will be created
+terraform apply   # Type 'yes' to confirm
+```
+
+Note the outputs—you'll need `input_bucket_name`, `output_bucket_name`, and `cloudfront_domain`.
+
+### 5. Trigger a Transcode Job
+
+The pipeline triggers when you upload an XML manifest to S3. A sample manifest is included:
+
+```bash
+# Upload the sample manifest
+aws s3 cp ../../../sample-data/manifests/attack-on-titan-s1e1.xml \
+  s3://$(terraform output -raw input_bucket_name)/manifests/
+
+# You'll also need to upload the actual mezzanine file referenced in the manifest
+# The sample manifest expects: mezzanines/attack-on-titan/s01/e01/aot_s01e01_mezzanine.mxf
+```
+
+### 6. Monitor Execution
+
+**Step Functions Console:**
+```
+https://console.aws.amazon.com/states/home?region=us-east-1#/statemachines
+```
+Click on the state machine to see execution history and the visual workflow.
+
+**CloudWatch Logs:**
+```bash
+# View Lambda logs
+aws logs tail /aws/lambda/anime-transcoding-manifest-parser-dev --follow
+```
+
+### 7. Access Transcoded Output
+
+Outputs are written to the output S3 bucket:
+```bash
+# List transcoded files
+aws s3 ls s3://$(terraform output -raw output_bucket_name)/ --recursive
+```
+
+**Playing via CloudFront (with signed URLs):**
+
+CloudFront is configured to require signed URLs. To generate one:
+
+```bash
+# First, you need a CloudFront key pair. Create one in AWS Console:
+# CloudFront > Key management > Public keys
+
+# Then generate a signed URL:
+pip install cryptography  # If not already installed
+
+python ../../../scripts/generate-signed-url.py \
+  --key-pair-id YOUR_KEY_PAIR_ID \
+  --private-key-file /path/to/private_key.pem \
+  --url "https://$(terraform output -raw cloudfront_domain)/series/attack-on-titan/s01/e01/hls/master.m3u8" \
+  --expires-in 86400
+```
+
+The signed URL can be opened in VLC, Safari, or any HLS-compatible player.
+
+**Direct S3 Access (for testing):**
+```bash
+# Generate a presigned URL (bypasses CloudFront, good for testing)
+aws s3 presign s3://$(terraform output -raw output_bucket_name)/series/attack-on-titan/s01/e01/hls/master.m3u8 --expires-in 3600
+```
+
+### 8. Cleanup
+
+```bash
+# Empty S3 buckets first (Terraform can't delete non-empty buckets)
+aws s3 rm s3://$(terraform output -raw input_bucket_name) --recursive
+aws s3 rm s3://$(terraform output -raw output_bucket_name) --recursive
+
+# Destroy infrastructure
+terraform destroy
+```
+
+### Mock Mode (No MediaConvert Costs)
+
+Set `mock_mode = true` in `terraform.tfvars` to test the pipeline without actual transcoding. The Step Functions workflow will execute, but MediaConvert calls are simulated.
+
+---
 
 ## Project Structure
 
 ```
-anime-transcoding-pipeline/
 ├── src/
-│   ├── shared/                 # Common utilities
-│   │   ├── config.py           # Pydantic settings
-│   │   ├── models.py           # Data models
-│   │   ├── exceptions.py       # Custom exceptions
-│   │   └── aws_clients.py      # Boto3 wrappers
-│   ├── manifest_parser/        # Lambda: Parse XML manifests
-│   ├── input_validator/        # Lambda: Validate mezzanines
-│   ├── job_submitter/          # Lambda: Submit MediaConvert jobs
-│   ├── output_validator/       # Lambda: Validate outputs
-│   └── notification_handler/   # Lambda: Send notifications
+│   ├── shared/              # Config, models, clients
+│   ├── manifest_parser/     # XML ingestion
+│   ├── input_validator/     # Checksum, file size
+│   ├── job_submitter/       # Idempotency, job config
+│   ├── output_validator/    # HLS/DASH verification
+│   └── notification_handler/
 │
 ├── terraform/
-│   ├── modules/
-│   │   ├── s3-buckets/         # Input/output storage
-│   │   ├── kms-encryption/     # Customer-managed keys
-│   │   ├── mediaconvert/       # Queues and IAM
-│   │   ├── lambda-functions/   # All Lambdas
-│   │   ├── step-functions/     # Pipeline orchestration
-│   │   ├── cloudwatch-monitoring/  # Dashboards & alarms
-│   │   ├── sns-notifications/  # Alert topics
-│   │   ├── dynamodb/           # Idempotency tables
-│   │   └── cloudfront-distribution/  # CDN delivery
-│   └── environments/
-│       ├── dev/
-│       ├── staging/
-│       └── prod/
-│
-├── tests/
-│   ├── unit/                   # pytest + moto
-│   ├── integration/            # LocalStack tests
-│   └── fixtures/               # Sample data
+│   ├── modules/             # s3, lambda, step-functions, mediaconvert, etc.
+│   └── environments/dev/
 │
 ├── scripts/
-│   ├── setup-localstack.sh     # Initialize local AWS
-│   ├── create-test-video.sh    # Generate test clips
-│   └── generate-signed-url.py  # CloudFront URL tool
+│   ├── generate-signed-url.py  # CloudFront signed URL generator
+│   └── create-test-video.sh    # Generate test mezzanine files
 │
 ├── sample-data/
-│   └── manifests/              # Sample anime manifests
+│   └── manifests/           # Example XML manifests
 │
-└── docs/
-    ├── architecture.md         # Detailed architecture
-    └── runbook.md              # Operations guide
+└── tests/                   # pytest + moto
 ```
 
-## Key Features
+---
 
-### 1. Anime-Focused XML Manifest
+## Cost Estimate
 
-```xml
-<AnimeTranscodeManifest version="1.0">
-    <ManifestId>aot-s01e01-2024-001</ManifestId>
-    <Episode>
-        <SeriesId>attack-on-titan</SeriesId>
-        <SeriesTitle>Attack on Titan</SeriesTitle>
-        <SeriesTitle lang="ja">進撃の巨人</SeriesTitle>
-        <SeasonNumber>1</SeasonNumber>
-        <EpisodeNumber>1</EpisodeNumber>
-        <EpisodeTitle>To You, in 2000 Years</EpisodeTitle>
-    </Episode>
-    <AudioTracks>
-        <AudioTrack language="ja" default="true">Japanese</AudioTrack>
-        <AudioTrack language="en">English (Funimation Dub)</AudioTrack>
-    </AudioTracks>
-    <!-- ... -->
-</AnimeTranscodeManifest>
-```
+| Resource | Per Episode |
+|----------|-------------|
+| MediaConvert | ~$0.50-1.00 |
+| Step Functions | ~$0.10 |
+| Lambda | Negligible |
+| S3 + CloudFront | Variable |
 
-### 2. ABR Ladder Configuration
-
-| Codec | Resolution | Bitrate | Profile | Use Case |
-|-------|------------|---------|---------|----------|
-| H.264 | 1920x1080 | 6.0 Mbps | High 4.2 | Desktop/TV |
-| H.264 | 1280x720 | 3.5 Mbps | High 4.0 | Tablet |
-| H.264 | 854x480 | 1.8 Mbps | Main 3.1 | Mobile |
-| H.264 | 640x360 | 800 Kbps | Main 3.0 | Low bandwidth |
-| H.265 | 1920x1080 | 4.5 Mbps | Main 4.0 | Modern devices |
-| H.265 | 1280x720 | 2.5 Mbps | Main 4.0 | Modern mobile |
-
-**Rate Control**: QVBR (Quality-Defined Variable Bitrate) at level 7 for optimal quality/size balance.
-
-### 3. Comprehensive Validation
-
-| Stage | Check | Action on Failure |
-|-------|-------|-------------------|
-| Pre-transcode | MD5 checksum | Reject, notify |
-| Pre-transcode | File size match | Reject, notify |
-| Pre-transcode | Resolution bounds | Reject, notify |
-| Post-transcode | HLS playlist validity | Retry, then fail |
-| Post-transcode | DASH MPD validity | Retry, then fail |
-| Post-transcode | Duration match (±0.5s) | Warn |
-
-### 4. CloudWatch Monitoring
-
-- **Pipeline Dashboard**: Executions, duration, error rates
-- **MediaConvert Metrics**: Jobs submitted/completed/errored
-- **Lambda Metrics**: Invocations, errors, duration
-- **Custom Metrics**: Validation success/failure rates
-
-### 5. Security Best Practices
-
-- **S3**: KMS encryption, versioning, public access blocked
-- **IAM**: Least privilege, resource-specific ARNs
-- **CloudFront**: Signed URLs with 24-hour expiry
-- **Lambda**: Environment variable encryption
-- **Audit**: CloudTrail for all operations
-
-## Development
-
-### Running Tests
-
-```bash
-# Run all tests
-make test
-
-# Run unit tests only
-make test-unit
-
-# Run with coverage report
-make test-cov
-
-# Run integration tests (requires LocalStack)
-make test-integration
-```
-
-### Code Quality
-
-```bash
-# Format code
-make format
-
-# Lint code
-make lint
-
-# Type checking
-make typecheck
-```
-
-### Terraform Operations
-
-```bash
-# Validate terraform
-make tf-validate
-
-# Plan changes
-make tf-plan ENV=dev
-
-# Apply changes
-make tf-apply ENV=dev
-```
-
-## Cost Optimization
-
-This project is designed for **zero-cost demos**:
-
-1. **LocalStack**: Runs all AWS services locally via Docker
-2. **Moto Mocking**: Unit tests don't require AWS
-3. **Mock Mode**: `MOCK_MODE=true` simulates MediaConvert
-4. **On-Demand**: DynamoDB and Lambda use pay-per-request
-
-For production estimates with real transcoding:
-- ~$0.015/minute for MediaConvert (on-demand)
-- ~$0.005/GB for S3 storage
-- ~$0.085/GB for CloudFront transfer
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `ENVIRONMENT` | Deployment environment | `dev` |
-| `MOCK_MODE` | Skip real MediaConvert calls | `false` |
-| `ENABLE_H265` | Enable H.265 encoding | `true` |
-| `ENABLE_DASH` | Generate DASH in addition to HLS | `true` |
-| `LOG_LEVEL` | Logging verbosity | `INFO` |
-
-### Terraform Variables
-
-See [terraform/environments/dev/variables.tf](terraform/environments/dev/variables.tf) for all configuration options.
-
-## API Reference
-
-### Trigger Pipeline
-
-Upload a manifest XML to S3:
-
-```bash
-aws s3 cp manifest.xml s3://anime-transcoding-input-dev/manifests/
-```
-
-### Generate Signed URL
-
-```bash
-python scripts/generate-signed-url.py \
-    --key-pair-id APKAXXXXXXXXXX \
-    --private-key-file private_key.pem \
-    --url https://dxxxxxxxx.cloudfront.net/series/s01/e01/hls/master.m3u8 \
-    --expires-in 86400
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- AWS MediaConvert documentation and best practices
-- [AWS Lambda Powertools](https://docs.powertools.aws.dev/lambda/python/) for observability
-- LocalStack for enabling free local development
----
+MIT

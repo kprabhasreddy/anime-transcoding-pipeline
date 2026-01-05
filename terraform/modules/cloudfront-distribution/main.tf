@@ -194,13 +194,7 @@ resource "aws_cloudfront_distribution" "main" {
     compress               = true
 
     # Require signed URLs if key group is configured
-    dynamic "trusted_key_groups" {
-      for_each = var.cloudfront_public_key_pem != "" && var.require_signed_urls ? [1] : []
-      content {
-        enabled = true
-        items   = [aws_cloudfront_key_group.main[0].id]
-      }
-    }
+    trusted_key_groups = var.cloudfront_public_key_pem != "" && var.require_signed_urls ? [aws_cloudfront_key_group.main[0].id] : []
   }
 
   # Cache behavior for HLS playlists (.m3u8)
@@ -216,13 +210,7 @@ resource "aws_cloudfront_distribution" "main" {
     viewer_protocol_policy = "redirect-to-https"
     compress               = true
 
-    dynamic "trusted_key_groups" {
-      for_each = var.cloudfront_public_key_pem != "" && var.require_signed_urls ? [1] : []
-      content {
-        enabled = true
-        items   = [aws_cloudfront_key_group.main[0].id]
-      }
-    }
+    trusted_key_groups = var.cloudfront_public_key_pem != "" && var.require_signed_urls ? [aws_cloudfront_key_group.main[0].id] : []
   }
 
   # Cache behavior for DASH manifests (.mpd)
@@ -238,13 +226,7 @@ resource "aws_cloudfront_distribution" "main" {
     viewer_protocol_policy = "redirect-to-https"
     compress               = true
 
-    dynamic "trusted_key_groups" {
-      for_each = var.cloudfront_public_key_pem != "" && var.require_signed_urls ? [1] : []
-      content {
-        enabled = true
-        items   = [aws_cloudfront_key_group.main[0].id]
-      }
-    }
+    trusted_key_groups = var.cloudfront_public_key_pem != "" && var.require_signed_urls ? [aws_cloudfront_key_group.main[0].id] : []
   }
 
   # Geo restrictions (optional)
