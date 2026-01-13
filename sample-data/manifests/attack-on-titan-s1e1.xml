@@ -1,0 +1,142 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Anime Transcoding Pipeline - Sample Manifest
+
+    This manifest demonstrates the anime-focused metadata schema used for
+    video transcoding workflows in streaming platforms.
+
+    Series: Attack on Titan (進撃の巨人)
+    Episode: S01E01 - "To You, in 2000 Years"
+-->
+<AnimeTranscodeManifest version="1.0"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+    <!-- Unique identifier for idempotent job submission -->
+    <ManifestId>aot-s01e01-2024-001</ManifestId>
+
+    <!-- Episode Metadata -->
+    <Episode>
+        <!-- Series Identification -->
+        <SeriesId>attack-on-titan</SeriesId>
+        <SeriesTitle>Attack on Titan</SeriesTitle>
+        <SeriesTitleJa>進撃の巨人</SeriesTitleJa>
+
+        <!-- Episode Identification -->
+        <SeasonNumber>1</SeasonNumber>
+        <EpisodeNumber>1</EpisodeNumber>
+        <EpisodeTitle>To You, in 2000 Years: The Fall of Shiganshina, Part 1</EpisodeTitle>
+        <EpisodeTitleJa>二千年後の君へ ―シガンシナ陥落①―</EpisodeTitleJa>
+
+        <EpisodeDescription>
+            After 100 years of peace, humanity is suddenly reminded of the terror
+            of being at the Titans' mercy when a Colossal Titan appears and destroys
+            the wall protecting Shiganshina. Eren watches helplessly as his mother
+            is eaten alive, and vows to exterminate every last Titan.
+        </EpisodeDescription>
+
+        <!-- Duration and Release -->
+        <DurationSeconds>1440.5</DurationSeconds>
+        <ReleaseDate>2013-04-07T00:00:00Z</ReleaseDate>
+
+        <!-- Content Metadata -->
+        <ContentRating>TV-MA</ContentRating>
+        <IsSimulcast>false</IsSimulcast>
+        <IsDubbed>true</IsDubbed>
+
+        <!-- Discovery Metadata -->
+        <Genres>
+            <Genre>Action</Genre>
+            <Genre>Drama</Genre>
+            <Genre>Fantasy</Genre>
+            <Genre>Horror</Genre>
+        </Genres>
+        <Studio>Wit Studio</Studio>
+        <AnimeSeasonTag>Spring 2013</AnimeSeasonTag>
+    </Episode>
+
+    <!-- Source Mezzanine File -->
+    <Mezzanine>
+        <FilePath>mezzanines/attack-on-titan/s01/e01/aot_s01e01_mezzanine.mxf</FilePath>
+
+        <!-- Integrity Verification -->
+        <ChecksumMD5>d41d8cd98f00b204e9800998ecf8427e</ChecksumMD5>
+        <ChecksumXXHash>a2b9c3d4e5f67890</ChecksumXXHash>
+        <FileSizeBytes>15728640000</FileSizeBytes>
+
+        <!-- Video Properties -->
+        <DurationSeconds>1440.5</DurationSeconds>
+        <VideoCodec>ProRes 422 HQ</VideoCodec>
+        <AudioCodec>PCM</AudioCodec>
+        <ResolutionWidth>1920</ResolutionWidth>
+        <ResolutionHeight>1080</ResolutionHeight>
+        <FrameRate>23.976</FrameRate>
+        <BitrateKbps>220000</BitrateKbps>
+
+        <!-- Advanced Properties -->
+        <ColorSpace>BT.709</ColorSpace>
+        <BitDepth>10</BitDepth>
+    </Mezzanine>
+
+    <!-- Audio Track Configuration -->
+    <AudioTracks>
+        <!-- Original Japanese Audio (Default) -->
+        <AudioTrack>
+            <Language>ja</Language>
+            <Label>Japanese</Label>
+            <IsDefault>true</IsDefault>
+            <Channels>2</Channels>
+            <TrackIndex>1</TrackIndex>
+        </AudioTrack>
+
+        <!-- English Dub -->
+        <AudioTrack>
+            <Language>en</Language>
+            <Label>English (Funimation Dub)</Label>
+            <IsDefault>false</IsDefault>
+            <Channels>2</Channels>
+            <TrackIndex>2</TrackIndex>
+        </AudioTrack>
+    </AudioTracks>
+
+    <!-- Subtitle Track Configuration -->
+    <SubtitleTracks>
+        <!-- English Subtitles (Default) -->
+        <SubtitleTrack>
+            <Language>en</Language>
+            <Label>English</Label>
+            <FilePath>subtitles/attack-on-titan/s01/e01/aot_s01e01_en.vtt</FilePath>
+            <IsDefault>true</IsDefault>
+            <IsForced>false</IsForced>
+            <Format>WebVTT</Format>
+        </SubtitleTrack>
+
+        <!-- Spanish (Latin America) -->
+        <SubtitleTrack>
+            <Language>es-419</Language>
+            <Label>Spanish (Latin America)</Label>
+            <FilePath>subtitles/attack-on-titan/s01/e01/aot_s01e01_es-latam.vtt</FilePath>
+            <IsDefault>false</IsDefault>
+            <IsForced>false</IsForced>
+            <Format>WebVTT</Format>
+        </SubtitleTrack>
+
+        <!-- Portuguese (Brazil) -->
+        <SubtitleTrack>
+            <Language>pt-BR</Language>
+            <Label>Portuguese (Brazil)</Label>
+            <FilePath>subtitles/attack-on-titan/s01/e01/aot_s01e01_pt-br.vtt</FilePath>
+            <IsDefault>false</IsDefault>
+            <IsForced>false</IsForced>
+            <Format>WebVTT</Format>
+        </SubtitleTrack>
+    </SubtitleTracks>
+
+    <!-- Job Configuration -->
+    <Priority>5</Priority>
+
+    <!-- Optional: Override default transcode settings -->
+    <TranscodeSettings>
+        <EnableH265>true</EnableH265>
+        <MaxBitrateCap>8000</MaxBitrateCap>
+    </TranscodeSettings>
+</AnimeTranscodeManifest>

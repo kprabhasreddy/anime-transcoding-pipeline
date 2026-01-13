@@ -1,0 +1,8 @@
+# Production dependencies only - for Lambda layer
+# boto3 is included in Lambda runtime, no need to package
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+aws-lambda-powertools>=2.30.0
+aws-xray-sdk>=2.12.0
+xxhash>=3.4.0
+lxml>=5.0.0

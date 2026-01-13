@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<AnimeTranscodeManifest version="1.0">
+    <ManifestId>example-video-001</ManifestId>
+
+    <Episode>
+        <SeriesId>test-series</SeriesId>
+        <SeriesTitle>Test Series</SeriesTitle>
+        <SeasonNumber>1</SeasonNumber>
+        <EpisodeNumber>1</EpisodeNumber>
+        <EpisodeTitle>Test Episode</EpisodeTitle>
+        <EpisodeDescription>A test video for pipeline validation</EpisodeDescription>
+        <DurationSeconds>10.0</DurationSeconds>
+        <ReleaseDate>2026-01-09</ReleaseDate>
+        <ContentRating>TV-G</ContentRating>
+    </Episode>
+
+    <Mezzanine>
+        <FilePath>mezzanines/test-video.mp4</FilePath>
+        <ChecksumMD5>5874a33e45dfbad57efe62ee527b2ed8</ChecksumMD5>
+        <ChecksumXXHash>99576762e919a572</ChecksumXXHash>
+        <FileSizeBytes>1330003</FileSizeBytes>
+        <DurationSeconds>10.0</DurationSeconds>
+        <VideoCodec>H.264</VideoCodec>
+        <AudioCodec>AAC</AudioCodec>
+        <ResolutionWidth>1920</ResolutionWidth>
+        <ResolutionHeight>1080</ResolutionHeight>
+        <FrameRate>24</FrameRate>
+        <BitrateKbps>1064</BitrateKbps>
+        <ColorSpace>BT.709</ColorSpace>
+        <BitDepth>8</BitDepth>
+    </Mezzanine>
+
+    <AudioTracks>
+        <AudioTrack>
+            <Language>en</Language>
+            <Label>English</Label>
+            <IsDefault>true</IsDefault>
+            <Channels>2</Channels>
+            <TrackIndex>1</TrackIndex>
+        </AudioTrack>
+    </AudioTracks>
+
+    <Priority>5</Priority>
+</AnimeTranscodeManifest>
